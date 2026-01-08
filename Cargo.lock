@@ -2595,6 +2595,7 @@ dependencies = [
  "temporal-core",
  "temporal-macros",
  "temporal-testing",
+ "testcontainers",
  "thiserror 1.0.69",
  "tokio",
  "tokio-test",
