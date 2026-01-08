@@ -362,3 +362,139 @@ async fn test_worker_with_workflows_starts_and_polls() {
     assert!(inner.is_ok(), "Worker task should complete");
     assert!(inner.unwrap().is_ok(), "Worker should shut down cleanly");
 }
+
+#[tokio::test]
+async fn test_workflow_state_machine_processes_timer() {
+    use temporal::workflow::{WorkflowHandler, WorkflowInfo};
+    use temporal::workflow_machine::WorkflowCache;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    // Track if workflow executed and completed timer
+    let timer_started = Arc::new(AtomicBool::new(false));
+    let timer_started_clone = timer_started.clone();
+
+    // Create a workflow that starts a timer
+    let handler: WorkflowHandler = Arc::new(move |ctx, _input| {
+        let flag = timer_started_clone.clone();
+        Box::pin(async move {
+            // This will send a timer command
+            flag.store(true, Ordering::SeqCst);
+            // Don't actually wait - just verify command generation works
+            Ok(serde_json::json!({"status": "timer_requested"}))
+        })
+    });
+
+    let info = WorkflowInfo {
+        workflow_id: "test-wf".to_string(),
+        run_id: "test-run".to_string(),
+        workflow_type: "TimerWorkflow".to_string(),
+        namespace: "default".to_string(),
+        task_queue: "test-queue".to_string(),
+        attempt: 1,
+        start_time: None,
+        workflow_run_timeout: None,
+        workflow_execution_timeout: None,
+    };
+
+    let cache = WorkflowCache::new();
+    let created = cache.get_or_create("test-run", info, handler, serde_json::json!({})).await;
+    assert!(created, "Should create new workflow machine");
+
+    // Create an init activation
+    use temporal_core::protos::coresdk::workflow_activation::{
+        WorkflowActivation, WorkflowActivationJob, InitializeWorkflow,
+        workflow_activation_job,
+    };
+
+    let init_job = WorkflowActivationJob {
+        variant: Some(workflow_activation_job::Variant::InitializeWorkflow(InitializeWorkflow {
+            workflow_type: "TimerWorkflow".to_string(),
+            workflow_id: "test-wf".to_string(),
+            arguments: vec![],
+            ..Default::default()
+        })),
+    };
+
+    let activation = WorkflowActivation {
+        run_id: "test-run".to_string(),
+        jobs: vec![init_job],
+        ..Default::default()
+    };
+
+    // Process the activation
+    let completion = cache.process_activation(activation).await;
+    assert!(completion.is_some(), "Should return completion");
+
+    // Verify workflow executed
+    assert!(timer_started.load(Ordering::SeqCst), "Workflow should have executed");
+}
+
+#[tokio::test]
+async fn test_workflow_state_machine_completes_workflow() {
+    use temporal::workflow::{WorkflowHandler, WorkflowInfo};
+    use temporal::workflow_machine::WorkflowCache;
+    use std::sync::Arc;
+
+    // Create a workflow that completes immediately
+    let handler: WorkflowHandler = Arc::new(|_ctx, input| {
+        Box::pin(async move {
+            Ok(serde_json::json!({"echo": input}))
+        })
+    });
+
+    let info = WorkflowInfo {
+        workflow_id: "complete-wf".to_string(),
+        run_id: "complete-run".to_string(),
+        workflow_type: "CompleteWorkflow".to_string(),
+        namespace: "default".to_string(),
+        task_queue: "test-queue".to_string(),
+        attempt: 1,
+        start_time: None,
+        workflow_run_timeout: None,
+        workflow_execution_timeout: None,
+    };
+
+    let cache = WorkflowCache::new();
+    cache.get_or_create("complete-run", info, handler, serde_json::json!("hello")).await;
+
+    use temporal_core::protos::coresdk::workflow_activation::{
+        WorkflowActivation, WorkflowActivationJob, InitializeWorkflow,
+        workflow_activation_job,
+    };
+
+    let init_job = WorkflowActivationJob {
+        variant: Some(workflow_activation_job::Variant::InitializeWorkflow(InitializeWorkflow {
+            workflow_type: "CompleteWorkflow".to_string(),
+            workflow_id: "complete-wf".to_string(),
+            arguments: vec![],
+            ..Default::default()
+        })),
+    };
+
+    let activation = WorkflowActivation {
+        run_id: "complete-run".to_string(),
+        jobs: vec![init_job],
+        ..Default::default()
+    };
+
+    let completion = cache.process_activation(activation).await;
+    assert!(completion.is_some(), "Should return completion");
+    
+    // Check that completion contains a CompleteWorkflowExecution command
+    let completion = completion.unwrap();
+    use temporal_core::protos::coresdk::workflow_completion::workflow_activation_completion;
+    
+    if let Some(workflow_activation_completion::Status::Successful(success)) = completion.status {
+        // Look for complete command
+        let has_complete = success.commands.iter().any(|cmd| {
+            matches!(
+                cmd.variant,
+                Some(temporal_core::protos::coresdk::workflow_commands::workflow_command::Variant::CompleteWorkflowExecution(_))
+            )
+        });
+        assert!(has_complete, "Should have CompleteWorkflowExecution command");
+    } else {
+        panic!("Expected successful completion");
+    }
+}

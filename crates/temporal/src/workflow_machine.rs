@@ -37,19 +37,14 @@ pub enum CommandId {
     ChildWorkflow(u32),
 }
 
-/// Result of unblocking a command.
-#[derive(Debug)]
-pub enum UnblockResult {
-    TimerFired,
-    TimerCancelled,
-    ActivityCompleted(serde_json::Value),
-    ActivityFailed(String),
-    ActivityCancelled,
+/// Tracks a pending timer command.
+struct PendingTimer {
+    result_tx: oneshot::Sender<()>,
 }
 
-/// Tracks a pending command that will be unblocked by an activation.
-struct PendingCommand {
-    unblocker: oneshot::Sender<UnblockResult>,
+/// Tracks a pending activity command.
+struct PendingActivity {
+    result_tx: oneshot::Sender<crate::workflow::ActivityResult>,
 }
 
 /// The workflow state machine.
@@ -63,8 +58,10 @@ pub struct WorkflowMachine {
     ctx: WorkflowContext,
     /// The workflow function future (boxed for type erasure)
     workflow_future: Option<Pin<Box<dyn Future<Output = Result<serde_json::Value, WorkflowError>> + Send + 'static>>>,
-    /// Pending commands waiting to be unblocked
-    pending_commands: HashMap<CommandId, PendingCommand>,
+    /// Pending timers waiting to fire
+    pending_timers: HashMap<u32, PendingTimer>,
+    /// Pending activities waiting for results
+    pending_activities: HashMap<u32, PendingActivity>,
     /// Next timer sequence number
     next_timer_seq: u32,
     /// Next activity sequence number
@@ -104,7 +101,8 @@ impl WorkflowMachine {
             run_id,
             ctx,
             workflow_future: Some(workflow_future),
-            pending_commands: HashMap::new(),
+            pending_timers: HashMap::new(),
+            pending_activities: HashMap::new(),
             next_timer_seq: 1,
             next_activity_seq: 1,
             outgoing_commands: Vec::new(),
@@ -161,42 +159,37 @@ impl WorkflowMachine {
             }
             Variant::FireTimer(timer) => {
                 tracing::debug!(run_id = %self.run_id, seq = timer.seq, "timer fired");
-                self.unblock_command(CommandId::Timer(timer.seq), UnblockResult::TimerFired);
+                self.complete_timer(timer.seq);
             }
             Variant::ResolveActivity(resolve) => {
                 tracing::debug!(run_id = %self.run_id, seq = resolve.seq, "activity resolved");
                 if let Some(result) = resolve.result {
                     use temporal_core::protos::coresdk::activity_result::activity_resolution;
-                    match result.status {
+                    use crate::workflow::ActivityResult;
+                    
+                    let activity_result = match result.status {
                         Some(activity_resolution::Status::Completed(completed)) => {
                             let value = completed.result
                                 .and_then(|p| serde_json::from_slice(&p.data).ok())
                                 .unwrap_or(serde_json::Value::Null);
-                            self.unblock_command(
-                                CommandId::Activity(resolve.seq),
-                                UnblockResult::ActivityCompleted(value),
-                            );
+                            ActivityResult::Completed(value)
                         }
                         Some(activity_resolution::Status::Failed(failed)) => {
                             let msg = failed.failure
                                 .map(|f| f.message)
                                 .unwrap_or_else(|| "Activity failed".to_string());
-                            self.unblock_command(
-                                CommandId::Activity(resolve.seq),
-                                UnblockResult::ActivityFailed(msg),
-                            );
+                            ActivityResult::Failed(msg)
                         }
                         Some(activity_resolution::Status::Cancelled(_)) => {
-                            self.unblock_command(
-                                CommandId::Activity(resolve.seq),
-                                UnblockResult::ActivityCancelled,
-                            );
+                            ActivityResult::Cancelled
                         }
                         Some(activity_resolution::Status::Backoff(_)) => {
                             // Local activity backoff - not handled yet
+                            return;
                         }
-                        None => {}
-                    }
+                        None => return,
+                    };
+                    self.complete_activity(resolve.seq, activity_result);
                 }
             }
             Variant::CancelWorkflow(cancel) => {
@@ -239,11 +232,23 @@ impl WorkflowMachine {
         }
     }
 
-    fn unblock_command(&mut self, id: CommandId, result: UnblockResult) {
-        if let Some(pending) = self.pending_commands.remove(&id) {
-            let _ = pending.unblocker.send(result);
+    /// Complete a pending timer by sending () to its result channel.
+    fn complete_timer(&mut self, seq: u32) {
+        if let Some(pending) = self.pending_timers.remove(&seq) {
+            let _ = pending.result_tx.send(());
+            tracing::debug!(run_id = %self.run_id, seq, "timer completed");
         } else {
-            tracing::warn!(run_id = %self.run_id, ?id, "no pending command to unblock");
+            tracing::warn!(run_id = %self.run_id, seq, "no pending timer to complete");
+        }
+    }
+
+    /// Complete a pending activity by sending its result to the result channel.
+    fn complete_activity(&mut self, seq: u32, result: crate::workflow::ActivityResult) {
+        if let Some(pending) = self.pending_activities.remove(&seq) {
+            let _ = pending.result_tx.send(result);
+            tracing::debug!(run_id = %self.run_id, seq, "activity completed");
+        } else {
+            tracing::warn!(run_id = %self.run_id, seq, "no pending activity to complete");
         }
     }
 
@@ -265,21 +270,8 @@ impl WorkflowMachine {
                     };
                     self.outgoing_commands.push(timer_cmd);
                     
-                    // Track pending command - but we need to bridge to the oneshot
-                    // For now, we'll complete it immediately (timers work via unblock)
-                    let (unblocker, _) = oneshot::channel();
-                    self.pending_commands.insert(
-                        CommandId::Timer(seq),
-                        PendingCommand { unblocker },
-                    );
-                    
-                    // The result_tx needs to be completed when timer fires
-                    // Store it for later
-                    tokio::spawn(async move {
-                        // This will be completed when unblock is called
-                        // For now, just drop it - the workflow will be polled again
-                        drop(result_tx);
-                    });
+                    // Store the result channel - will be completed when timer fires
+                    self.pending_timers.insert(seq, PendingTimer { result_tx });
                 }
                 WfCmd::ScheduleActivity { seq, activity_type, input, options, result_tx } => {
                     tracing::debug!(
@@ -316,17 +308,8 @@ impl WorkflowMachine {
                     };
                     self.outgoing_commands.push(activity_cmd);
                     
-                    // Track pending command
-                    let (unblocker, _) = oneshot::channel();
-                    self.pending_commands.insert(
-                        CommandId::Activity(seq),
-                        PendingCommand { unblocker },
-                    );
-                    
-                    // Store result_tx for later
-                    tokio::spawn(async move {
-                        drop(result_tx);
-                    });
+                    // Store the result channel - will be completed when activity resolves
+                    self.pending_activities.insert(seq, PendingActivity { result_tx });
                 }
                 WfCmd::SubscribeSignal { name, sender } => {
                     tracing::debug!(run_id = %self.run_id, signal = %name, "subscribing to signal");
