@@ -45,6 +45,7 @@ pub mod activity;
 pub mod client;
 pub mod error;
 pub mod worker;
+pub mod workflow;
 
 pub mod prelude {
     //! Convenient re-exports for common usage.
@@ -57,6 +58,9 @@ pub mod prelude {
     pub use crate::client::Client;
     pub use crate::error::Error;
     pub use crate::worker::{Worker, WorkerBuilder};
+    pub use crate::workflow::{
+        ActivityOptions, RetryPolicy, WorkflowContext, WorkflowError, WorkflowInfo, WorkflowResult,
+    };
     pub use temporal_macros::{activity, query, signal, workflow};
 
     pub use serde_json::json;

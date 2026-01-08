@@ -19,6 +19,7 @@ use quote::quote;
 use syn::{parse_macro_input, ItemFn};
 
 mod activity;
+mod workflow;
 
 /// Marks an async function as a Temporal activity.
 ///
@@ -59,21 +60,32 @@ pub fn activity(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 /// Marks an async function as a Temporal workflow.
 ///
-/// **Note**: This macro is planned for Phase 2.
+/// The macro transforms the function to handle:
+/// - Automatic serialization/deserialization of inputs and outputs
+/// - Workflow context injection
+/// - Generation of a registration function
+///
+/// # Example
+///
+/// ```ignore
+/// use temporal::prelude::*;
+///
+/// #[workflow]
+/// async fn order_workflow(ctx: WorkflowContext, order: Order) -> WorkflowResult<Receipt> {
+///     let validated = ctx.execute_activity("validate", &order).await?;
+///     ctx.sleep(Duration::from_secs(60)).await;
+///     let receipt = ctx.execute_activity("process", &validated).await?;
+///     Ok(receipt)
+/// }
+///
+/// // Register with: .workflow_registration(order_workflow_registration())
+/// ```
 #[proc_macro_attribute]
-pub fn workflow(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn workflow(attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemFn);
-    let name = &input.sig.ident;
-
-    let expanded = quote! {
-        #input
-
-        impl ::temporal::workflow::WorkflowDefinition for #name {
-            const NAME: &'static str = stringify!(#name);
-        }
-    };
-
-    expanded.into()
+    workflow::expand_workflow(attr.into(), input)
+        .unwrap_or_else(|e| e.to_compile_error())
+        .into()
 }
 
 /// Marks a function as a signal handler for a workflow.

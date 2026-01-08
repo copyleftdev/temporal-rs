@@ -29,6 +29,7 @@
 use crate::activity::{
     ActivityContext, ActivityHandler, ActivityInfo, ActivityInput, ActivityRegistration,
 };
+use crate::workflow::{WorkflowHandler, WorkflowRegistration};
 use crate::client::Client;
 use crate::error::{Error, WorkerError};
 use futures::FutureExt;
@@ -52,6 +53,7 @@ pub struct Worker {
     client: Client,
     task_queue: String,
     activities: Arc<RwLock<HashMap<String, ActivityHandler>>>,
+    workflows: Arc<RwLock<HashMap<String, WorkflowHandler>>>,
     task_tokens_to_cancels: Arc<RwLock<HashMap<Vec<u8>, CancellationToken>>>,
     shutdown: CancellationToken,
 }
@@ -263,6 +265,11 @@ impl Worker {
     pub fn register_activity(&self, name: impl Into<String>, handler: ActivityHandler) {
         self.activities.write().insert(name.into(), handler);
     }
+
+    /// Register a workflow by name.
+    pub fn register_workflow(&self, name: impl Into<String>, handler: WorkflowHandler) {
+        self.workflows.write().insert(name.into(), handler);
+    }
 }
 
 impl std::fmt::Debug for Worker {
@@ -272,6 +279,10 @@ impl std::fmt::Debug for Worker {
             .field(
                 "activities",
                 &self.activities.read().keys().collect::<Vec<_>>(),
+            )
+            .field(
+                "workflows",
+                &self.workflows.read().keys().collect::<Vec<_>>(),
             )
             .finish()
     }
@@ -283,6 +294,7 @@ pub struct WorkerBuilder {
     client: Option<Client>,
     task_queue: Option<String>,
     activities: HashMap<String, ActivityHandler>,
+    workflows: HashMap<String, WorkflowHandler>,
 }
 
 impl WorkerBuilder {
@@ -321,6 +333,20 @@ impl WorkerBuilder {
         self
     }
 
+    /// Register a workflow from a registration struct.
+    #[must_use]
+    pub fn workflow_registration(mut self, registration: WorkflowRegistration) -> Self {
+        self.workflows.insert(registration.name, registration.handler);
+        self
+    }
+
+    /// Register a workflow by name and handler.
+    #[must_use]
+    pub fn workflow_handler(mut self, name: impl Into<String>, handler: WorkflowHandler) -> Self {
+        self.workflows.insert(name.into(), handler);
+        self
+    }
+
     /// Build the worker.
     ///
     /// # Errors
@@ -339,6 +365,7 @@ impl WorkerBuilder {
             client,
             task_queue,
             activities: Arc::new(RwLock::new(self.activities)),
+            workflows: Arc::new(RwLock::new(self.workflows)),
             task_tokens_to_cancels: Arc::new(RwLock::new(HashMap::new())),
             shutdown: CancellationToken::new(),
         })
@@ -350,6 +377,7 @@ impl std::fmt::Debug for WorkerBuilder {
         f.debug_struct("WorkerBuilder")
             .field("task_queue", &self.task_queue)
             .field("activities", &self.activities.keys().collect::<Vec<_>>())
+            .field("workflows", &self.workflows.keys().collect::<Vec<_>>())
             .finish()
     }
 }
