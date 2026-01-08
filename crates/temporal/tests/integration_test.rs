@@ -1,15 +1,35 @@
 //! Integration tests for the Temporal SDK.
 //!
-//! These tests require Docker to be running and will spin up a Temporal server
-//! using testcontainers.
+//! These tests require a Temporal server running on localhost:7233.
+//! You can start one with:
+//!
+//! ```bash
+//! docker run -d -p 7233:7233 temporalio/auto-setup:latest
+//! ```
 
 use std::sync::Arc;
 use std::time::Duration;
 use temporal::activity::{ActivityContext, ActivityError, ActivityInput};
 use temporal::client::Client;
 use temporal::worker::Worker;
-use temporal_testing::{TemporalContainer, fixtures};
-use testcontainers::clients::Cli;
+use temporal_testing::fixtures;
+
+/// Get the Temporal server address from env or use default.
+fn temporal_address() -> String {
+    std::env::var("TEMPORAL_ADDRESS").unwrap_or_else(|_| "localhost:7233".into())
+}
+
+/// Check if Temporal server is available.
+async fn temporal_available() -> bool {
+    let addr = temporal_address();
+    match Client::connect(&addr, "default").await {
+        Ok(_) => true,
+        Err(e) => {
+            eprintln!("Temporal not available at {}: {}", addr, e);
+            false
+        }
+    }
+}
 
 /// Simple echo activity for testing.
 async fn echo_activity(
@@ -28,39 +48,14 @@ async fn greet_activity(
     Ok(serde_json::json!(format!("Hello, {}!", name)))
 }
 
-/// Activity that simulates failure.
-async fn failing_activity(
-    _ctx: ActivityContext,
-    _input: ActivityInput,
-) -> Result<serde_json::Value, ActivityError> {
-    Err(ActivityError::failed("intentional failure"))
-}
-
-/// Activity that checks cancellation.
-async fn cancellable_activity(
-    ctx: ActivityContext,
-    _input: ActivityInput,
-) -> Result<serde_json::Value, ActivityError> {
-    for i in 0..10 {
-        if ctx.is_cancelled() {
-            return Err(ActivityError::cancelled(format!("cancelled at iteration {}", i)));
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    Ok(serde_json::json!({"completed": true}))
-}
-
 #[tokio::test]
-#[ignore = "requires Docker"]
-async fn test_worker_connects_to_temporal() {
-    let docker = Cli::default();
-    let container = TemporalContainer::start(&docker).expect("Failed to start Temporal container");
+async fn test_client_connects_to_temporal() {
+    if !temporal_available().await {
+        eprintln!("Skipping test - Temporal server not available");
+        return;
+    }
 
-    let endpoint = container.endpoint();
-    println!("Temporal server running at: {}", endpoint);
-
-    // Connect client
-    let client = Client::connect(&endpoint, "default").await;
+    let client = Client::connect(&temporal_address(), "default").await;
     assert!(client.is_ok(), "Should connect to Temporal server");
 
     let client = client.unwrap();
@@ -68,12 +63,13 @@ async fn test_worker_connects_to_temporal() {
 }
 
 #[tokio::test]
-#[ignore = "requires Docker"]
 async fn test_worker_registers_activities() {
-    let docker = Cli::default();
-    let container = TemporalContainer::start(&docker).expect("Failed to start Temporal container");
+    if !temporal_available().await {
+        eprintln!("Skipping test - Temporal server not available");
+        return;
+    }
 
-    let client = Client::connect(&container.endpoint(), "default")
+    let client = Client::connect(&temporal_address(), "default")
         .await
         .expect("Failed to connect");
 
@@ -93,16 +89,17 @@ async fn test_worker_registers_activities() {
 }
 
 #[tokio::test]
-#[ignore = "requires Docker"]
-async fn test_worker_starts_and_stops() {
-    let docker = Cli::default();
-    let container = TemporalContainer::start(&docker).expect("Failed to start Temporal container");
+async fn test_worker_starts_and_polls() {
+    if !temporal_available().await {
+        eprintln!("Skipping test - Temporal server not available");
+        return;
+    }
 
-    let client = Client::connect(&container.endpoint(), "default")
+    let client = Client::connect(&temporal_address(), "default")
         .await
         .expect("Failed to connect");
 
-    let task_queue = fixtures::unique_task_queue("test-start-stop");
+    let task_queue = fixtures::unique_task_queue("test-start-poll");
 
     let mut worker = Worker::builder()
         .client(client)
@@ -111,7 +108,7 @@ async fn test_worker_starts_and_stops() {
         .build()
         .expect("Failed to build worker");
 
-    // Create a channel to signal shutdown from within the spawned task
+    // Create a channel to signal shutdown
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
     let worker_handle = tokio::spawn(async move {
@@ -119,14 +116,13 @@ async fn test_worker_starts_and_stops() {
             result = worker.run() => result,
             _ = &mut shutdown_rx => {
                 worker.shutdown();
-                // Give it a moment to process shutdown
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 Ok(())
             }
         }
     });
 
-    // Let worker poll for a bit
+    // Let worker poll for 2 seconds
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // Signal shutdown
@@ -135,9 +131,16 @@ async fn test_worker_starts_and_stops() {
     // Wait for worker to stop
     let result = tokio::time::timeout(Duration::from_secs(5), worker_handle).await;
     assert!(result.is_ok(), "Worker should stop within timeout");
+    
+    let inner = result.unwrap();
+    assert!(inner.is_ok(), "Worker task should complete");
+    assert!(inner.unwrap().is_ok(), "Worker should shut down cleanly");
 }
 
-/// Test that verifies the activity context provides correct info.
+// ============================================================================
+// Unit tests (no Temporal server required)
+// ============================================================================
+
 #[tokio::test]
 async fn test_activity_context_info() {
     use temporal::activity::{ActivityContext, ActivityInfo};
@@ -162,7 +165,6 @@ async fn test_activity_context_info() {
     assert!(!ctx.is_cancelled());
 }
 
-/// Test activity error types.
 #[tokio::test]
 async fn test_activity_error_types() {
     let cancelled = ActivityError::cancelled("user cancelled");
@@ -178,7 +180,6 @@ async fn test_activity_error_types() {
     assert!(matches!(non_retry, ActivityError::Application { non_retryable: true, .. }));
 }
 
-/// Test activity input deserialization.
 #[tokio::test]
 async fn test_activity_input_deserialization() {
     use temporal::activity::{ActivityInput, deserialize_input};
@@ -201,15 +202,11 @@ async fn test_activity_input_deserialization() {
     assert_eq!(person.age, 30);
 }
 
-/// Test that worker builder validates required fields.
 #[tokio::test]
 async fn test_worker_builder_validation() {
-    // Missing client
+    // Missing client should fail
     let result = Worker::builder()
         .task_queue("test-queue")
         .build();
     assert!(result.is_err());
-
-    // Missing task queue - need a client first
-    // This would require a connection, so we just verify the builder pattern works
 }

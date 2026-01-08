@@ -1,6 +1,6 @@
 //! Testcontainers support for Temporal server.
 
-use testcontainers::{clients::Cli, core::WaitFor, Container, GenericImage};
+use testcontainers::{clients::Cli, core::WaitFor, Container, GenericImage, RunnableImage};
 use url::Url;
 
 /// Default Temporal server image.
@@ -52,9 +52,14 @@ impl<'d> TemporalContainer<'d> {
     ) -> Result<Self, ContainerError> {
         let image = GenericImage::new(options.image, options.tag)
             .with_exposed_port(GRPC_PORT)
-            .with_wait_for(WaitFor::message_on_stdout("Temporal server is running"));
+            .with_wait_for(WaitFor::seconds(30));
 
-        let container = docker.run(image);
+        // Configure for SQLite (no external DB needed)
+        let runnable = RunnableImage::from(image)
+            .with_env_var(("DB", "sqlite"))
+            .with_env_var(("DYNAMIC_CONFIG_FILE_PATH", "config/dynamicconfig/development-sql.yaml"));
+
+        let container = docker.run(runnable);
         let grpc_port = container.get_host_port_ipv4(GRPC_PORT);
 
         Ok(Self {
