@@ -35,5 +35,9 @@ tracing-subscriber = { workspace = true }
 default = []
 testcontainers = ["temporal-testing/testcontainers"]
 
+[[example]]
+name = "activity_worker"
+path = "../../examples/activity_worker.rs"
+
 [lints]
 workspace = true

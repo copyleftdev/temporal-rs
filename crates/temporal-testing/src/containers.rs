@@ -55,7 +55,7 @@ impl<'d> TemporalContainer<'d> {
             .with_wait_for(WaitFor::message_on_stdout("Temporal server is running"));
 
         let container = docker.run(image);
-        let grpc_port = container.get_host_port_ipv4(GRPC_PORT).unwrap();
+        let grpc_port = container.get_host_port_ipv4(GRPC_PORT);
 
         Ok(Self {
             container,

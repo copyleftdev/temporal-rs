@@ -53,7 +53,7 @@ pub mod prelude {
     //! use temporal::prelude::*;
     //! ```
 
-    pub use crate::activity::{ActivityContext, ActivityError, ActivityResult};
+    pub use crate::activity::{ActivityContext, ActivityError, ActivityInput, ActivityResult};
     pub use crate::client::Client;
     pub use crate::error::Error;
     pub use crate::worker::{Worker, WorkerBuilder};
