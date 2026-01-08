@@ -45,8 +45,9 @@ pub struct WorkflowContext {
 }
 
 impl WorkflowContext {
-    /// Create a new workflow context (internal use).
-    pub(crate) fn new(
+    /// Create a new workflow context.
+    #[doc(hidden)]
+    pub fn new(
         info: WorkflowInfo,
         command_tx: mpsc::UnboundedSender<WorkflowCommand>,
         cancel_rx: watch::Receiver<bool>,

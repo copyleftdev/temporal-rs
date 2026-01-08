@@ -210,3 +210,92 @@ async fn test_worker_builder_validation() {
         .build();
     assert!(result.is_err());
 }
+
+// ============================================================================
+// Workflow tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_workflow_info() {
+    use temporal::workflow::WorkflowInfo;
+
+    let info = WorkflowInfo {
+        workflow_id: "test-workflow-123".to_string(),
+        run_id: "run-456".to_string(),
+        workflow_type: "OrderWorkflow".to_string(),
+        namespace: "default".to_string(),
+        task_queue: "order-queue".to_string(),
+        attempt: 1,
+        start_time: None,
+        workflow_run_timeout: None,
+        workflow_execution_timeout: None,
+    };
+
+    assert_eq!(info.workflow_id, "test-workflow-123");
+    assert_eq!(info.run_id, "run-456");
+    assert_eq!(info.workflow_type, "OrderWorkflow");
+    assert_eq!(info.namespace, "default");
+    assert_eq!(info.task_queue, "order-queue");
+    assert_eq!(info.attempt, 1);
+}
+
+#[tokio::test]
+async fn test_workflow_error_types() {
+    use temporal::workflow::WorkflowError;
+
+    let activity_failed = WorkflowError::ActivityFailed("timeout".into());
+    assert!(matches!(activity_failed, WorkflowError::ActivityFailed(_)));
+
+    let cancelled = WorkflowError::Cancelled;
+    assert!(matches!(cancelled, WorkflowError::Cancelled));
+
+    let app_error = WorkflowError::application("invalid order", "ValidationError");
+    assert!(matches!(app_error, WorkflowError::Application { .. }));
+}
+
+#[tokio::test]
+async fn test_workflow_activity_options() {
+    use temporal::workflow::{ActivityOptions, RetryPolicy};
+    use std::time::Duration;
+
+    let opts = ActivityOptions::default();
+    assert!(opts.task_queue.is_none());
+    assert_eq!(opts.start_to_close_timeout, Some(Duration::from_secs(60)));
+
+    let retry = RetryPolicy::default();
+    assert_eq!(retry.initial_interval, Duration::from_secs(1));
+    assert_eq!(retry.backoff_coefficient, 2.0);
+    assert_eq!(retry.maximum_attempts, 0); // unlimited
+}
+
+#[tokio::test]
+async fn test_worker_workflow_registration() {
+    use temporal::workflow::WorkflowHandler;
+    use std::sync::Arc;
+
+    if !temporal_available().await {
+        eprintln!("Skipping test - Temporal server not available");
+        return;
+    }
+
+    let client = Client::connect(&temporal_address(), "default")
+        .await
+        .expect("Failed to connect");
+
+    let task_queue = fixtures::unique_task_queue("test-wf-register");
+
+    // Create a simple workflow handler
+    let handler: WorkflowHandler = Arc::new(|_ctx, input| {
+        Box::pin(async move {
+            Ok(input) // echo back input
+        })
+    });
+
+    let worker = Worker::builder()
+        .client(client)
+        .task_queue(&task_queue)
+        .workflow_handler("echo_workflow", handler)
+        .build();
+
+    assert!(worker.is_ok(), "Worker should build with workflow handler");
+}
