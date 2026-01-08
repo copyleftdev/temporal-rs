@@ -61,9 +61,14 @@ repos:
       - id: markdownlint
         args: ['--fix', '--disable', 'MD013', 'MD033', 'MD041', '--']
 
-  # TOML formatting
-  - repo: https://github.com/tamasfe/taplo
-    rev: 0.8.1
+  # TOML formatting (using local taplo if installed)
+  - repo: local
     hooks:
       - id: taplo
+        name: taplo format
+        description: Format TOML files
+        entry: taplo
         args: ['format', '--check']
+        language: system
+        types: [toml]
+        pass_filenames: true

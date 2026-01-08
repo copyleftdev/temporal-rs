@@ -1,0 +1,36 @@
+[package]
+name = "temporal-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Low-level bindings to Temporal SDK Core"
+keywords = ["temporal", "workflow", "sdk", "core"]
+categories = ["development-tools"]
+
+[dependencies]
+tokio = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+futures-util = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+prost = { workspace = true }
+tonic = { workspace = true }
+
+# Re-export sdk-core types
+temporalio-sdk-core = { workspace = true }
+temporalio-client = { workspace = true }
+temporalio-common = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+
+[features]
+default = []
+ephemeral-server = ["temporalio-sdk-core/ephemeral-server"]
+
+[lints]
+workspace = true

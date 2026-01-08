@@ -1,0 +1,30 @@
+[package]
+name = "temporal-testing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Testing utilities for Temporal SDK"
+keywords = ["temporal", "testing", "testcontainers"]
+categories = ["development-tools::testing"]
+
+[dependencies]
+temporal-core = { path = "../temporal-core" }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+fastrand = { workspace = true }
+
+[dependencies.testcontainers]
+version = "0.15"
+optional = true
+
+[features]
+default = []
+testcontainers = ["dep:testcontainers"]
+
+[lints]
+workspace = true

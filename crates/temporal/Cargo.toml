@@ -1,0 +1,39 @@
+[package]
+name = "temporal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "High-performance Rust SDK for Temporal workflow orchestration"
+keywords = ["temporal", "workflow", "orchestration", "distributed", "async"]
+categories = ["asynchronous", "development-tools"]
+readme = "../../README.md"
+
+[dependencies]
+temporal-core = { path = "../temporal-core" }
+temporal-macros = { path = "../temporal-macros" }
+
+tokio = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+uuid = { workspace = true }
+tokio-util = { workspace = true }
+
+[dev-dependencies]
+temporal-testing = { path = "../temporal-testing", features = ["testcontainers"] }
+tokio-test = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[features]
+default = []
+testcontainers = ["temporal-testing/testcontainers"]
+
+[lints]
+workspace = true

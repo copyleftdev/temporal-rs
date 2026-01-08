@@ -1,0 +1,74 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/temporal",
+    "crates/temporal-core",
+    "crates/temporal-macros",
+    "crates/temporal-testing",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/copyleftdev/temporal-rs"
+homepage = "https://github.com/copyleftdev/temporal-rs"
+keywords = ["temporal", "workflow", "orchestration", "distributed", "async"]
+categories = ["asynchronous", "development-tools"]
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.36", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+futures-util = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+prost = "0.13"
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Logging & tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+uuid = { version = "1.7", features = ["v4"] }
+url = "2.5"
+parking_lot = "0.12"
+fastrand = "2.0"
+tokio-util = { version = "0.7", features = ["rt"] }
+
+# gRPC
+tonic = "0.12"
+
+# Temporal SDK Core (from git - not published to crates.io)
+temporalio-sdk-core = { git = "https://github.com/temporalio/sdk-core.git", package = "temporalio-sdk-core" }
+temporalio-client = { git = "https://github.com/temporalio/sdk-core.git", package = "temporalio-client" }
+temporalio-common = { git = "https://github.com/temporalio/sdk-core.git", package = "temporalio-common" }
+
+# Testing
+testcontainers = "0.15"
+tokio-test = "0.4"
+
+# Proc macro dependencies
+syn = { version = "2.0", features = ["full", "parsing", "printing"] }
+quote = "1.0"
+proc-macro2 = "1.0"
+darling = "0.20"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
