@@ -19,4 +19,6 @@ pub use runtime::CoreRuntime;
 pub use worker::CoreWorker;
 
 pub use temporalio_common::protos;
+pub use temporalio_common::errors::PollError;
+pub use temporalio_common::Worker as CoreWorkerTrait;
 pub use url::Url;

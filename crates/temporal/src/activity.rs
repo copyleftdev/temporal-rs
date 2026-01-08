@@ -31,6 +31,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use thiserror::Error;
+use tokio_util::sync::CancellationToken;
 
 /// The context passed to activity functions.
 ///
@@ -40,7 +41,7 @@ use thiserror::Error;
 pub struct ActivityContext {
     info: ActivityInfo,
     heartbeat_tx: Option<tokio::sync::mpsc::UnboundedSender<serde_json::Value>>,
-    cancelled: Arc<std::sync::atomic::AtomicBool>,
+    cancel_token: CancellationToken,
 }
 
 impl ActivityContext {
@@ -50,7 +51,17 @@ impl ActivityContext {
         Self {
             info,
             heartbeat_tx: None,
-            cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            cancel_token: CancellationToken::new(),
+        }
+    }
+
+    /// Create a new activity context with a cancellation token.
+    #[must_use]
+    pub fn new_with_cancel(info: ActivityInfo, cancel_token: CancellationToken) -> Self {
+        Self {
+            info,
+            heartbeat_tx: None,
+            cancel_token,
         }
     }
 
@@ -79,7 +90,15 @@ impl ActivityContext {
     /// when cancelled.
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(std::sync::atomic::Ordering::Relaxed)
+        self.cancel_token.is_cancelled()
+    }
+
+    /// Wait for the activity to be cancelled.
+    ///
+    /// This is useful for long-running activities that want to gracefully
+    /// shut down when cancelled.
+    pub async fn cancelled(&self) {
+        self.cancel_token.cancelled().await;
     }
 
     /// Get information about this activity.
