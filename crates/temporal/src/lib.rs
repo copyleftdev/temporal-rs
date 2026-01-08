@@ -46,6 +46,7 @@ pub mod client;
 pub mod error;
 pub mod worker;
 pub mod workflow;
+pub mod workflow_machine;
 
 pub mod prelude {
     //! Convenient re-exports for common usage.

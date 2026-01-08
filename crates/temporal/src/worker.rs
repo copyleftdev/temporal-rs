@@ -50,6 +50,7 @@ use temporal_core::protos::temporal::api::common::v1::Payload;
 use temporal_core::protos::temporal::api::failure::v1::Failure;
 use tokio_util::sync::CancellationToken;
 use crate::workflow::{WorkflowContext, WorkflowInfo};
+use crate::workflow_machine::WorkflowCache;
 
 /// A worker that polls for and executes tasks.
 pub struct Worker {
@@ -57,6 +58,7 @@ pub struct Worker {
     task_queue: String,
     activities: Arc<RwLock<HashMap<String, ActivityHandler>>>,
     workflows: Arc<RwLock<HashMap<String, WorkflowHandler>>>,
+    workflow_cache: Arc<WorkflowCache>,
     task_tokens_to_cancels: Arc<RwLock<HashMap<Vec<u8>, CancellationToken>>>,
     shutdown: CancellationToken,
 }
@@ -309,142 +311,76 @@ impl Worker {
             "received workflow activation"
         );
 
-        // Process each job in the activation
-        for job in &activation.jobs {
-            if let Some(variant) = &job.variant {
-                match variant {
-                    workflow_activation_job::Variant::InitializeWorkflow(init) => {
-                        self.handle_workflow_init(core_worker.clone(), &activation, init).await;
-                        return; // Init handles its own completion
-                    }
-                    workflow_activation_job::Variant::FireTimer(timer) => {
-                        tracing::debug!(seq = timer.seq, "timer fired");
-                    }
-                    workflow_activation_job::Variant::ResolveActivity(resolve) => {
-                        tracing::debug!(seq = resolve.seq, "activity resolved");
-                    }
-                    workflow_activation_job::Variant::CancelWorkflow(_) => {
-                        tracing::debug!(run_id = %run_id, "workflow cancellation requested");
-                    }
-                    workflow_activation_job::Variant::SignalWorkflow(signal) => {
-                        tracing::debug!(
-                            run_id = %run_id,
-                            signal_name = %signal.signal_name,
-                            "workflow signal received"
-                        );
-                    }
-                    workflow_activation_job::Variant::QueryWorkflow(query) => {
-                        tracing::debug!(
-                            run_id = %run_id,
-                            query_type = %query.query_type,
-                            "workflow query received"
-                        );
-                    }
-                    workflow_activation_job::Variant::RemoveFromCache(_) => {
-                        tracing::debug!(run_id = %run_id, "workflow evicted from cache");
-                    }
-                    _ => {
-                        tracing::debug!(run_id = %run_id, "unhandled workflow activation job");
-                    }
+        // Check if this is an init activation - need to create the workflow machine first
+        let has_init = activation.jobs.iter().any(|job| {
+            matches!(
+                job.variant,
+                Some(workflow_activation_job::Variant::InitializeWorkflow(_))
+            )
+        });
+
+        if has_init {
+            // Find the init job to get workflow type
+            for job in &activation.jobs {
+                if let Some(workflow_activation_job::Variant::InitializeWorkflow(init)) = &job.variant {
+                    let workflow_type = &init.workflow_type;
+                    
+                    let handler = self.workflows.read().get(workflow_type).cloned();
+                    let Some(handler) = handler else {
+                        tracing::error!(workflow_type = %workflow_type, "no handler registered");
+                        let completion = WorkflowActivationCompletion {
+                            run_id: run_id.clone(),
+                            ..Default::default()
+                        };
+                        let _ = core_worker.inner().complete_workflow_activation(completion).await;
+                        return;
+                    };
+
+                    // Extract input from arguments
+                    let input = init
+                        .arguments
+                        .first()
+                        .and_then(|p| serde_json::from_slice(&p.data).ok())
+                        .unwrap_or(serde_json::Value::Null);
+
+                    // Create workflow info
+                    let info = WorkflowInfo {
+                        workflow_id: init.workflow_id.clone(),
+                        run_id: run_id.clone(),
+                        workflow_type: workflow_type.clone(),
+                        namespace: self.client.namespace().to_string(),
+                        task_queue: self.task_queue.clone(),
+                        attempt: init.attempt as u32,
+                        start_time: None,
+                        workflow_run_timeout: None,
+                        workflow_execution_timeout: None,
+                    };
+
+                    tracing::info!(
+                        workflow_type = %workflow_type,
+                        workflow_id = %init.workflow_id,
+                        run_id = %run_id,
+                        "initializing workflow via state machine"
+                    );
+
+                    // Create workflow in cache
+                    self.workflow_cache.get_or_create(&run_id, info, handler, input).await;
+                    break;
                 }
             }
         }
 
-        // For non-init activations, send empty completion for now
-        // TODO: Implement full workflow state machine
-        let completion = WorkflowActivationCompletion {
-            run_id,
-            ..Default::default()
-        };
-        let _ = core_worker.inner().complete_workflow_activation(completion).await;
-    }
-
-    async fn handle_workflow_init(
-        &self,
-        core_worker: Arc<CoreWorker>,
-        activation: &WorkflowActivation,
-        init: &temporal_core::protos::coresdk::workflow_activation::InitializeWorkflow,
-    ) {
-        let workflow_type = &init.workflow_type;
-        let workflow_id = &init.workflow_id;
-        let run_id = &activation.run_id;
-
-        tracing::info!(
-            workflow_type = %workflow_type,
-            workflow_id = %workflow_id,
-            run_id = %run_id,
-            "initializing workflow"
-        );
-
-        let handler = self.workflows.read().get(workflow_type).cloned();
-        let Some(handler) = handler else {
-            tracing::error!(workflow_type = %workflow_type, "no handler registered");
+        // Process activation through state machine
+        if let Some(completion) = self.workflow_cache.process_activation(activation).await {
+            let _ = core_worker.inner().complete_workflow_activation(completion).await;
+        } else {
+            tracing::warn!(run_id = %run_id, "no workflow machine found for activation");
             let completion = WorkflowActivationCompletion {
-                run_id: run_id.clone(),
+                run_id,
                 ..Default::default()
             };
             let _ = core_worker.inner().complete_workflow_activation(completion).await;
-            return;
-        };
-
-        // Extract input from arguments
-        let input = init
-            .arguments
-            .first()
-            .and_then(|p| serde_json::from_slice(&p.data).ok())
-            .unwrap_or(serde_json::Value::Null);
-
-        // Create workflow info
-        let info = WorkflowInfo {
-            workflow_id: workflow_id.clone(),
-            run_id: run_id.clone(),
-            workflow_type: workflow_type.clone(),
-            namespace: self.client.namespace().to_string(),
-            task_queue: self.task_queue.clone(),
-            attempt: init.attempt as u32,
-            start_time: None,
-            workflow_run_timeout: None,
-            workflow_execution_timeout: None,
-        };
-
-        // Create channels for workflow communication
-        let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
-
-        let ctx = WorkflowContext::new(info, cmd_tx, cancel_rx);
-        let run_id_clone = run_id.clone();
-
-        // Execute workflow in a spawned task
-        tokio::spawn(async move {
-            let result = AssertUnwindSafe(handler(ctx, input)).catch_unwind().await;
-
-            let completion = match result {
-                Ok(Ok(_value)) => {
-                    tracing::info!(run_id = %run_id_clone, "workflow completed successfully");
-                    // TODO: Set workflow result in completion
-                    WorkflowActivationCompletion {
-                        run_id: run_id_clone,
-                        ..Default::default()
-                    }
-                }
-                Ok(Err(e)) => {
-                    tracing::error!(run_id = %run_id_clone, error = %e, "workflow failed");
-                    WorkflowActivationCompletion {
-                        run_id: run_id_clone,
-                        ..Default::default()
-                    }
-                }
-                Err(_) => {
-                    tracing::error!(run_id = %run_id_clone, "workflow panicked");
-                    WorkflowActivationCompletion {
-                        run_id: run_id_clone,
-                        ..Default::default()
-                    }
-                }
-            };
-
-            let _ = core_worker.inner().complete_workflow_activation(completion).await;
-        });
+        }
     }
 
     /// Request the worker to shut down gracefully.
@@ -557,6 +493,7 @@ impl WorkerBuilder {
             task_queue,
             activities: Arc::new(RwLock::new(self.activities)),
             workflows: Arc::new(RwLock::new(self.workflows)),
+            workflow_cache: Arc::new(WorkflowCache::new()),
             task_tokens_to_cancels: Arc::new(RwLock::new(HashMap::new())),
             shutdown: CancellationToken::new(),
         })
