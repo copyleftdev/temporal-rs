@@ -299,3 +299,66 @@ async fn test_worker_workflow_registration() {
 
     assert!(worker.is_ok(), "Worker should build with workflow handler");
 }
+
+#[tokio::test]
+async fn test_worker_with_workflows_starts_and_polls() {
+    use temporal::workflow::WorkflowHandler;
+    use std::sync::Arc;
+
+    if !temporal_available().await {
+        eprintln!("Skipping test - Temporal server not available");
+        return;
+    }
+
+    let client = Client::connect(&temporal_address(), "default")
+        .await
+        .expect("Failed to connect");
+
+    let task_queue = fixtures::unique_task_queue("test-wf-start");
+
+    // Create a simple workflow handler
+    let handler: WorkflowHandler = Arc::new(|ctx, input| {
+        Box::pin(async move {
+            tracing::info!(
+                workflow_id = %ctx.workflow_id(),
+                "workflow executing"
+            );
+            Ok(input)
+        })
+    });
+
+    let mut worker = Worker::builder()
+        .client(client)
+        .task_queue(&task_queue)
+        .workflow_handler("test_workflow", handler)
+        .build()
+        .expect("Failed to build worker");
+
+    // Create a channel to signal shutdown
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let worker_handle = tokio::spawn(async move {
+        tokio::select! {
+            result = worker.run() => result,
+            _ = &mut shutdown_rx => {
+                worker.shutdown();
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                Ok(())
+            }
+        }
+    });
+
+    // Let worker poll for 2 seconds
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Signal shutdown
+    let _ = shutdown_tx.send(());
+
+    // Wait for worker to stop
+    let result = tokio::time::timeout(Duration::from_secs(5), worker_handle).await;
+    assert!(result.is_ok(), "Worker should stop within timeout");
+    
+    let inner = result.unwrap();
+    assert!(inner.is_ok(), "Worker task should complete");
+    assert!(inner.unwrap().is_ok(), "Worker should shut down cleanly");
+}
