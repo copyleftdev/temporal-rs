@@ -1,0 +1,25 @@
+# Markdown lint configuration
+# https://github.com/DavidAnson/markdownlint
+
+default: true
+
+# Line length - disabled for flexibility
+MD013: false
+
+# Inline HTML - allowed for badges and complex formatting
+MD033: false
+
+# First line heading - disabled for issue templates
+MD041: false
+
+# Trailing punctuation in headings
+MD026:
+  punctuation: ".,;:!"
+
+# Code block style
+MD046:
+  style: "fenced"
+
+# Code fence style
+MD048:
+  style: "backtick"
